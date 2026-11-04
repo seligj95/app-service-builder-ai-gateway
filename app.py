@@ -106,7 +106,12 @@ def create_app(settings: Settings | None = None, agent=None, now=utc_now):
         path = request.scope["path"]
         if path == "/health":
             return await call_next(request)
-        if request.headers.getlist("host") != [config.public_host]:
+        # Builder replaces this header; Host is its internal routing destination.
+        public_hosts = (
+            request.headers.getlist("x-forwarded-host")
+            if "x-forwarded-host" in request.headers else request.headers.getlist("host")
+        )
+        if len(request.headers.getlist("host")) != 1 or public_hosts != [config.public_host]:
             return JSONResponse({"error": "invalid_host"}, status_code=400)
         if now() >= config.expires_at:
             return JSONResponse({"error": "sample_expired"}, status_code=403)

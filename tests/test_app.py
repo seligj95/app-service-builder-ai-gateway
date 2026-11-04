@@ -175,6 +175,38 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.client.get("/static/chat.js", headers=identity(HUMAN)).status_code, 200)
         self.assertEqual(self.client.get("/static/unknown.js", headers=identity(HUMAN)).status_code, 404)
 
+    def test_builder_forwarded_public_host_serves_page_and_protected_stream(self):
+        headers = identity() | {
+            "Host": "sandbox.internal.example",
+            "X-Forwarded-Host": settings().public_host,
+        }
+        page = self.client.get("/", headers=headers)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Chat through AI Gateway.", page.text)
+        response = self.client.post(
+            "/api/chat/stream", headers=headers | {"Origin": settings().origin},
+            json={"message": "Hello"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: delta", response.text)
+        self.assertIn("Builder.", response.text)
+        self.assertEqual(self.client.get("/", headers={
+            "Host": "sandbox.internal.example", "X-Forwarded-Host": settings().public_host,
+        }).status_code, 401)
+
+    def test_hostile_or_ambiguous_forwarded_host_is_not_accepted(self):
+        for forwarded in ("hostile.example", "", settings().public_host + ", hostile.example"):
+            self.assertEqual(self.client.get("/", headers=identity() | {
+                "X-Forwarded-Host": forwarded,
+            }).status_code, 400)
+        for duplicate in ("x-forwarded-host", "host"):
+            headers = list(identity().items()) + [
+                ("host", "sandbox.internal.example"),
+                ("x-forwarded-host", settings().public_host),
+                (duplicate, settings().public_host),
+            ]
+            self.assertEqual(self.client.get("/", headers=headers).status_code, 400)
+
 
 class ConfigTests(unittest.TestCase):
     def test_direct_provider_or_ambiguous_endpoint_configuration_is_rejected(self):

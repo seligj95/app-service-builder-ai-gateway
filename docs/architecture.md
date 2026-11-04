@@ -22,8 +22,10 @@ instructions.
 | App user-assigned managed identity | AI Gateway Models User on the `appservice-chat` alias |
 | Gateway managed identity | Cognitive Services OpenAI User on the model account |
 
-Builder verifies the visitor and replaces incoming identity headers. The app
-checks those trusted claims before allowing chat. Don't expose Uvicorn directly
+Builder verifies the visitor and replaces incoming identity and forwarding
+headers. The app checks those trusted claims and the exact `X-Forwarded-Host`
+before allowing chat; the transport `Host` is an internal routing destination.
+Don't expose Uvicorn directly
 or disable Builder authentication.
 
 The app has no tools or callback endpoint. It can't inspect your Azure
