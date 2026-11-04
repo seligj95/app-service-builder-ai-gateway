@@ -112,7 +112,20 @@ def create_app(settings: Settings | None = None, agent=None, now=utc_now):
             if "x-forwarded-host" in request.headers else request.headers.getlist("host")
         )
         if len(request.headers.getlist("host")) != 1 or public_hosts != [config.public_host]:
-            return JSONResponse({"error": "invalid_host"}, status_code=400)
+            error = {"error": "invalid_host"}
+            if verified_identity(request, config) in config.chat_user_ids:
+                def hostname_values(name):
+                    values = request.headers.getlist(name)
+                    return [
+                        value if re.fullmatch(r"[A-Za-z0-9.,: -]{1,253}", value) else "invalid"
+                        for value in values[:3]
+                    ]
+                error["hostDiagnostic"] = {
+                    "transport": hostname_values("host"),
+                    "forwarded": hostname_values("x-forwarded-host"),
+                    "configured": config.public_host,
+                }
+            return JSONResponse(error, status_code=400)
         if now() >= config.expires_at:
             return JSONResponse({"error": "sample_expired"}, status_code=403)
         identity = verified_identity(request, config)
