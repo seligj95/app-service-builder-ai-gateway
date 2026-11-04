@@ -17,6 +17,11 @@ object ID. The gateway needs a token for the receiver application's audience.
 Builder must replace caller-supplied identity headers with verified identity.
 The fixture doesn't validate bearer tokens itself.
 
+The fixture emits a constant DEV/TEST startup notice after loading its secret and
+starting MCP. Denial events distinguish missing, duplicate and mismatched
+credentials without recording their values. Verify diagnostic delivery before a
+hosted credential test.
+
 The attached app identity needs read access to only the test secret. The fixture
 expects these nonsecret variables:
 

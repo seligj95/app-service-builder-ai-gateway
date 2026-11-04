@@ -130,7 +130,7 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(
             captured.output,
-            ["WARNING:callback_probe:callback_gateway_identity_required"],
+            ["WARNING:callback_probe:callback_gateway_identity_mismatch"],
         )
 
     def test_secret_denial_logs_only_a_constant_event(self):
@@ -139,8 +139,26 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(
             captured.output,
-            ["WARNING:callback_probe:callback_backend_secret_required"],
+            ["WARNING:callback_probe:callback_backend_secret_mismatch"],
         )
+
+    def test_denial_categories_never_include_header_values(self):
+        cases = [
+            ([], "callback_gateway_identity_missing"),
+            ([(PRINCIPAL_HEADER, PRINCIPAL), (PRINCIPAL_HEADER, SECRET)], "callback_gateway_identity_duplicate"),
+            ([(PRINCIPAL_HEADER, PRINCIPAL)], "callback_backend_secret_missing"),
+            (
+                [(PRINCIPAL_HEADER, PRINCIPAL), (SECRET_HEADER, SECRET), (SECRET_HEADER, SECRET)],
+                "callback_backend_secret_duplicate",
+            ),
+        ]
+        for headers, event in cases:
+            with self.subTest(event=event), self.assertLogs("callback_probe", level="WARNING") as captured:
+                response = self.client.post("/mcp", headers=headers, json={})
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(captured.output, ["WARNING:callback_probe:" + event])
+            self.assertEqual(self.app.state.successful_calls, 0)
+            self.assertNotIn(SECRET, response.text)
 
     def test_expiry_blocks_previously_valid_credentials(self):
         self.clock = NOW + timedelta(hours=2)
@@ -180,6 +198,18 @@ class CallbackTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_startup_marker_follows_successful_secret_loading(self):
+        with self.assertLogs("callback_probe", level="WARNING") as captured:
+            with TestClient(create_app(settings(), lambda: SECRET, now=lambda: NOW)):
+                pass
+        self.assertEqual(
+            captured.output,
+            ["WARNING:callback_probe:callback_fixture_dev_test_only"],
+        )
+        with self.assertNoLogs("callback_probe", level="WARNING"), self.assertRaises(RuntimeError):
+            with TestClient(create_app(settings(), lambda: "", now=lambda: NOW)):
+                pass
+
     def test_unsafe_vault_origin_or_host_is_rejected(self):
         for value in [
             "http://example-fixture.vault.azure.net",

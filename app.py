@@ -130,6 +130,7 @@ def create_app(
         app.state.successful_calls = 0
         try:
             async with transport.router.lifespan_context(transport):
+                logger.warning("callback_fixture_dev_test_only")
                 yield
         finally:
             app.state.callback_secret = b""
@@ -151,14 +152,21 @@ def create_app(
                 principals[0].lower().encode("utf-8"),
                 config.gateway_principal_id.lower().encode("utf-8"),
             ):
-                logger.warning("callback_gateway_identity_required")
+                reason = "missing" if not principals else "duplicate" if len(principals) > 1 else "mismatch"
+                logger.warning("callback_gateway_identity_%s", reason)
                 return JSONResponse({"error": "gateway_identity_required"}, status_code=401)
             secrets = request.headers.getlist(SECRET_HEADER)
             expected = getattr(app.state, "callback_secret", b"")
             if not expected or len(secrets) != 1 or not hmac.compare_digest(
                 secrets[0].encode("utf-8"), expected
             ):
-                logger.warning("callback_backend_secret_required")
+                reason = (
+                    "unavailable" if not expected
+                    else "missing" if not secrets
+                    else "duplicate" if len(secrets) > 1
+                    else "mismatch"
+                )
+                logger.warning("callback_backend_secret_%s", reason)
                 return JSONResponse({"error": "backend_secret_required"}, status_code=401)
         return await call_next(request)
 
