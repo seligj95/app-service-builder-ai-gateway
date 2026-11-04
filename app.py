@@ -1,4 +1,4 @@
-"""Builder-hosted SSE agent and two protected, read-only MCP tools."""
+"""Protected Builder chat streaming model responses through AI Gateway."""
 
 import asyncio
 import base64
@@ -15,9 +15,6 @@ from azure.identity.aio import ManagedIdentityCredential
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from mcp.server.mcpserver import MCPServer
-from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from config import Settings
@@ -75,20 +72,6 @@ class ChatRequest(BaseModel):
 
 def create_app(settings: Settings | None = None, agent=None, now=utc_now):
     config = settings if settings is not None else Settings.from_env()
-    logging.getLogger("mcp.server.transport_security").setLevel(logging.CRITICAL + 1)
-
-    async def fixed_arguments(context, call_next):
-        if context.method == "tools/call" and isinstance(context.params, dict):
-            if context.params.get("arguments", {}) != {}:
-                logger.warning("tool_arguments_rejected")
-                return CallToolResult(
-                    content=[TextContent(type="text", text="This tool accepts no arguments.")],
-                    isError=True,
-                )
-        return await call_next(context)
-
-    server = MCPServer("builder-operations", log_level="CRITICAL", middleware=[fixed_arguments])
-    # MCP configures the root logger; preserve our constant-only diagnostics.
     logger.setLevel(logging.WARNING)
     html = (STATIC / "index.html").read_text()
 
@@ -98,13 +81,6 @@ def create_app(settings: Settings | None = None, agent=None, now=utc_now):
         return f"'sha256-{digest}'"
 
     script_hash, style_hash = inline_hash("script"), inline_hash("style")
-    transport = server.streamable_http_app(
-        json_response=True, stateless_http=True, max_request_body_size=16_384,
-        transport_security=TransportSecuritySettings(
-            allowed_hosts=[config.public_host, f"{config.public_host}:*"],
-            allowed_origins=[config.origin],
-        ),
-    )
 
     @asynccontextmanager
     async def lifespan(app):
@@ -115,11 +91,9 @@ def create_app(settings: Settings | None = None, agent=None, now=utc_now):
             credential = ManagedIdentityCredential(client_id=config.identity_client_id)
         app.state.agent = agent if agent is not None else GatewayAgent(config, credential)
         app.state.active_chats = 0
-        app.state.tool_calls = {"get_service_status": 0, "get_deployment_context": 0}
         try:
-            async with transport.router.lifespan_context(transport):
-                logger.warning("sample_dev_test_ready")
-                yield
+            logger.warning("sample_dev_test_ready")
+            yield
         finally:
             if credential is not None:
                 await credential.close()
@@ -137,10 +111,8 @@ def create_app(settings: Settings | None = None, agent=None, now=utc_now):
         if now() >= config.expires_at:
             return JSONResponse({"error": "sample_expired"}, status_code=403)
         identity = verified_identity(request, config)
-        mcp = path == "/mcp" or path.startswith("/mcp/")
-        allowed = identity == config.gateway_principal_id if mcp else identity in config.chat_user_ids
-        if not allowed:
-            logger.warning("callback_identity_denied" if mcp else "chat_identity_denied")
+        if identity not in config.chat_user_ids:
+            logger.warning("chat_identity_denied")
             return JSONResponse({"error": "identity_required"}, status_code=401)
         return await call_next(request)
 
@@ -219,23 +191,4 @@ def create_app(settings: Settings | None = None, agent=None, now=utc_now):
             headers={"X-Accel-Buffering": "no", "X-Correlation-Id": correlation},
         )
 
-    annotation = ToolAnnotations(
-        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
-    )
-
-    @server.tool(name="get_service_status", annotations=annotation)
-    async def get_service_status() -> dict[str, str]:
-        """Return synthetic process liveness, not Azure resource health."""
-        logger.warning("tool_service_status_called")
-        app.state.tool_calls["get_service_status"] += 1
-        return {"service": config.app_name, "status": "healthy"}
-
-    @server.tool(name="get_deployment_context", annotations=annotation)
-    async def get_deployment_context() -> dict[str, str]:
-        """Return explicitly configured nonsecret Builder deployment labels."""
-        logger.warning("tool_deployment_context_called")
-        app.state.tool_calls["get_deployment_context"] += 1
-        return {"app": config.app_name, "region": config.region, "environment": "DEV/TEST"}
-
-    app.mount("/", transport)
     return app

@@ -73,18 +73,18 @@ html[data-theme="dark"] {
   <main>
     <header>
       <p class="eyebrow">APP SERVICE BUILDER / DEV &amp; TEST</p>
-      <h1>One gateway. Two read-only tools.</h1>
+      <h1>Chat through AI Gateway.</h1>
       <p>Chat with a Python agent through a dedicated Azure AI Gateway.
-        Service and deployment answers use the protected MCP callback.</p>
+        Managed identities connect the app, gateway, and model.</p>
     </header>
     <section class="chat" aria-label="Gateway chat">
       <div id="transcript" role="log" aria-label="Conversation" aria-live="off" tabindex="0">
-        <p class="hint">Ask about this sample, its service status, or its deployment context.
+        <p class="hint">Ask a general question to try a streamed model response.
           Don't enter secrets or personal data.</p>
       </div>
       <div class="prompts" aria-label="Example questions">
-        <button type="button" data-prompt="What is the current service status?">Check service status</button>
-        <button type="button" data-prompt="Show the deployment context.">Show deployment context</button>
+        <button type="button" data-prompt="Explain AI Gateway in two sentences.">Explain AI Gateway</button>
+        <button type="button" data-prompt="Suggest a small Python web app idea.">Suggest an app idea</button>
       </div>
       <form id="chat-form">
         <label for="message">Message</label>
@@ -97,7 +97,7 @@ html[data-theme="dark"] {
         </div>
       </form>
     </section>
-    <footer>Preview sample. Model and tool requests stay on the configured gateway.
+    <footer>Preview sample. Model requests stay on the configured gateway.
       Each message starts a new conversation.</footer>
   </main>
 </body>

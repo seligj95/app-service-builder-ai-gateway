@@ -10,7 +10,7 @@ from azure.identity.aio import ManagedIdentityCredential
 from fastapi.testclient import TestClient
 
 from app import ChatRequest, create_app
-from config import Settings, TOOL_NAMES
+from config import Settings
 from gateway import GatewayFailure
 from identity import OBJECT_CLAIM, PRINCIPAL_HEADER, TENANT_CLAIM
 from starlette.requests import Request
@@ -26,14 +26,14 @@ NOW = datetime(2030, 1, 1, tzinfo=timezone.utc)
 def settings(**overrides):
     return Settings(**({
         "gateway_host": "example.eastus2-01.ai.gateway.azure.com",
-        "gateway_principal_id": GATEWAY, "tenant_id": TENANT,
+        "tenant_id": TENANT,
         "chat_user_ids": (HUMAN,), "identity_client_id": OTHER,
         "public_host": "sample.app.westus2.builderapps.dev",
         "expires_at": NOW + timedelta(hours=2),
     } | overrides))
 
 
-def identity(principal=GATEWAY, tenant=TENANT):
+def identity(principal=HUMAN, tenant=TENANT):
     payload = {
         "auth_typ": "aad",
         "claims": [{"typ": OBJECT_CLAIM, "val": principal}, {"typ": TENANT_CLAIM, "val": tenant}],
@@ -78,62 +78,32 @@ class AppTests(unittest.TestCase):
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
 
-    def rpc(self, method, params=None, headers=None):
-        return self.client.post("/mcp", headers={
-            **identity(), "Accept": "application/json, text/event-stream", **(headers or {}),
-        }, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}})
-
-    def test_gateway_discovers_and_calls_exactly_two_readonly_tools_without_secret(self):
-        initialized = self.rpc("initialize", {
-            "protocolVersion": "2025-06-18", "capabilities": {},
-            "clientInfo": {"name": "local-test", "version": "1"},
-        })
-        self.assertEqual(initialized.status_code, 200)
-        tools = self.rpc("tools/list").json()["result"]["tools"]
-        self.assertEqual({tool["name"] for tool in tools}, set(TOOL_NAMES))
-        self.assertTrue(all(tool["annotations"]["readOnlyHint"] for tool in tools))
-        for name in TOOL_NAMES:
-            response = self.rpc("tools/call", {"name": name, "arguments": {}})
-            self.assertEqual(response.status_code, 200)
-            self.assertFalse(response.json()["result"].get("isError", False))
-            self.assertNotIn(TENANT, response.text)
-            self.assertNotIn(GATEWAY, response.text)
-        self.assertEqual(self.app.state.tool_calls, dict.fromkeys(TOOL_NAMES, 1))
-
-    def test_anonymous_human_wrong_principal_or_tenant_cannot_call_mcp(self):
-        for headers in ({}, identity(HUMAN), identity(OTHER), identity(tenant=OTHER)):
-            response = self.client.post("/mcp", json={}, headers=headers)
+    def test_anonymous_wrong_principal_or_tenant_cannot_call_chat(self):
+        for headers in ({}, identity(GATEWAY), identity(OTHER), identity(tenant=OTHER)):
+            response = self.client.post("/api/chat/stream", json={"message": "Hello"}, headers=headers)
             self.assertEqual(response.status_code, 401)
-        self.assertEqual(sum(self.app.state.tool_calls.values()), 0)
 
     def test_duplicate_identity_headers_and_claims_are_rejected(self):
-        headers = list(identity().items()) + [(PRINCIPAL_HEADER, GATEWAY)]
-        self.assertEqual(self.client.post("/mcp", headers=headers, json={}).status_code, 401)
+        headers = list(identity().items()) + [(PRINCIPAL_HEADER, HUMAN)]
+        self.assertEqual(self.client.get("/", headers=headers).status_code, 401)
         for corrupt in ("invalid-base64", base64.b64encode(b"[]").decode()):
-            response = self.rpc("tools/list", headers={"x-ms-client-principal": corrupt})
+            response = self.client.get("/", headers=identity() | {"x-ms-client-principal": corrupt})
             self.assertEqual(response.status_code, 401)
 
     def test_provider_and_full_principal_must_match(self):
         for headers in (
             {"x-ms-client-principal-idp": "github"},
-            {"x-ms-client-principal": identity(HUMAN)["x-ms-client-principal"]},
+            {"x-ms-client-principal": identity(OTHER)["x-ms-client-principal"]},
         ):
-            self.assertEqual(self.rpc("tools/list", headers=headers).status_code, 401)
+            self.assertEqual(self.client.get("/", headers=identity() | headers).status_code, 401)
 
     def test_denial_never_logs_identity_or_header_content(self):
         with self.assertLogs("builder_gateway", level="WARNING") as logs:
-            response = self.rpc("tools/list", headers={PRINCIPAL_HEADER: "sensitive-private-value"})
+            response = self.client.get("/", headers=identity() | {PRINCIPAL_HEADER: "sensitive-private-value"})
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(logs.output, ["WARNING:builder_gateway:callback_identity_denied"])
+        self.assertEqual(logs.output, ["WARNING:builder_gateway:chat_identity_denied"])
 
-    def test_unknown_tool_and_nonempty_arguments_do_not_execute(self):
-        response = self.rpc("tools/call", {"name": "delete_app", "arguments": {}})
-        self.assertTrue(response.json()["result"]["isError"])
-        response = self.rpc("tools/call", {"name": TOOL_NAMES[0], "arguments": {"secret": "not-allowed"}})
-        self.assertTrue(response.json()["result"]["isError"])
-        self.assertEqual(sum(self.app.state.tool_calls.values()), 0)
-
-    def test_human_chat_streams_and_gateway_cannot_use_browser_routes(self):
+    def test_approved_user_chat_streams_without_a_callback_route(self):
         response = self.client.post(
             "/api/chat/stream", json={"message": "Hello"},
             headers={**identity(HUMAN), "Origin": settings().origin},
@@ -144,7 +114,8 @@ class AppTests(unittest.TestCase):
         self.assertIn("Builder.", response.text)
         self.assertTrue(response.text.endswith("event: done\ndata: {}\n\n"))
         self.assertEqual(self.app.state.active_chats, 0)
-        self.assertEqual(self.client.get("/", headers=identity()).status_code, 401)
+        self.assertEqual(self.client.get("/", headers=identity(GATEWAY)).status_code, 401)
+        self.assertEqual(self.client.post("/mcp", headers=identity(), json={}).status_code, 404)
 
     def test_cross_origin_invalid_input_and_overloaded_chat_are_explicit_errors(self):
         for origin in (None, "https://evil.example"):
@@ -171,14 +142,13 @@ class AppTests(unittest.TestCase):
     def test_expiry_health_host_and_body_bounds(self):
         self.assertEqual(self.client.get("/health").json(), {"status": "ok"})
         self.assertEqual(self.client.get("/health", headers={"Host": "127.0.0.1:8080"}).status_code, 200)
-        self.assertEqual(self.rpc("tools/list", {"padding": "x" * 17000}).status_code, 413)
         response = self.client.post("/api/chat/stream", headers={
             **identity(HUMAN), "Origin": settings().origin, "Content-Type": "application/json",
         }, content=(chunk for chunk in (b'{"message":"', b"x" * 9000, b"x" * 9000, b'"}')))
         self.assertEqual(response.status_code, 413)
-        self.assertEqual(self.rpc("tools/list", headers={"Host": "hostile.example"}).status_code, 400)
+        self.assertEqual(self.client.get("/", headers=identity() | {"Host": "hostile.example"}).status_code, 400)
         self.clock = NOW + timedelta(hours=2)
-        self.assertEqual(self.rpc("tools/list").status_code, 403)
+        self.assertEqual(self.client.get("/", headers=identity()).status_code, 403)
         self.assertEqual(self.client.get("/health").status_code, 200)
 
     def test_unstarted_or_cancelled_stream_does_not_leak_a_chat_slot(self):
@@ -211,7 +181,7 @@ class ConfigTests(unittest.TestCase):
         for host in ("https://example.ai.gateway.azure.com", "resource.openai.azure.com", "example.eastus2.ai.gateway.azure.com.evil", "example.eastus2.ai.gateway.azure.com/path"):
             with self.assertRaises(ValueError):
                 settings(gateway_host=host)
-        for changes in ({"chat_user_ids": ()}, {"chat_user_ids": (GATEWAY,)}, {"chat_user_ids": (HUMAN, HUMAN)}, {"tenant_id": "bad"}, {"expires_at": NOW.replace(tzinfo=None)}):
+        for changes in ({"chat_user_ids": ()}, {"chat_user_ids": (HUMAN, HUMAN)}, {"tenant_id": "bad"}, {"expires_at": NOW.replace(tzinfo=None)}):
             with self.assertRaises(ValueError):
                 settings(**changes)
 
