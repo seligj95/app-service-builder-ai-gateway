@@ -1,120 +1,118 @@
-# App Service Builder AI Gateway callback experiment
+# Test a protected MCP callback
 
-**Experimental test fixture, not a finished AI agent sample.** This personal
-testing repository contains one Python/FastAPI MCP server for checking a dedicated
-AI Gateway's combined backend credentials. It does not contain a chat UI, model
-route, inference, Agent Framework integration, or a supported deployment claim.
-Nothing here has been qualified for production or published to Azure-Samples.
+Use this Python/FastAPI fixture to test a dedicated AI Gateway callback to App
+Service Builder. Its synthetic `callback_probe` tool requires a Builder-verified
+gateway identity and an independent backend secret.
 
-The eventual agent sample still needs its separate browser streaming, gateway-only
-model routing, and two fixed read-only tool checks. This fixture does not silently
-replace those requirements.
+In this tutorial, you learn how to:
 
-## What this tests
+- Run local MCP protocol and authorization tests.
+- Configure identity-based secret loading for an isolated hosted test.
+- Check both callback credentials before connecting a tool to an agent.
 
-```text
-Authorized MCP client
-  -> dedicated AI Gateway ToolServer
-  -> Builder required Entra authentication
-  -> FastAPI /mcp: trusted gateway principal ID AND independent secret header
-  -> one synthetic read-only callback_probe tool
-```
+> [!IMPORTANT]
+> Use this experimental fixture only in an isolated DEV/TEST environment, for at
+> most two hours. Keep Builder's required Entra authentication enabled. The app
+> relies on Builder to validate tokens and replace incoming identity headers;
+> don't expose it directly on another host.
 
-The tool returns only success flags and a process-local invocation count. It makes
-no model calls or downstream business operations. An explicit expiry deadline
-blocks new MCP requests even if credentials remain cached. Startup rejects a deadline
-more than two hours in the future. Only one fixed replica
-is intended; its counter is diagnostic, not persistent state.
+## Prerequisites
 
-The app trusts `X-MS-CLIENT-PRINCIPAL-ID` **only because Builder strips untrusted
-identity headers and emits its verified identity**. This fixture does not itself
-validate Entra bearer tokens. Do not expose it directly on another hosting service
-without an equivalent trusted authentication boundary. Builder's required visitor
-authentication must remain enabled for the whole application.
+- Python 3.14 and Git for the local tests.
+- For a hosted test: a Builder app, a dedicated AI Gateway, a user-assigned managed
+  identity, and an Azure Key Vault secret in your approved test environment.
+- Permission to configure the app's Entra receiver and narrow identity/secret
+  access. Use [Builder authentication](https://builder.appservice.azure.com/docs/guides/authentication/)
+  and [managed identity](https://builder.appservice.azure.com/docs/guides/managed-identity/)
+  instructions for those resources.
 
-## Local checks
+The local tests use synthetic credentials and don't require Azure resources.
 
-Use Python 3.14 in an isolated virtual environment:
+## 1. Set up Python
+
+Clone this repository, open its root directory, and create an environment:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
+```
+
+## 2. Run the local tests
+
+```bash
 .venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python -m compileall -q app.py tests
 ```
 
-Dependencies, including transitive SDK requirements, are pinned in `requirements.txt`.
-Tests inject a synthetic secret and clock in process; they need no Azure resource,
-token, real secret, or `.env` file. They exercise MCP initialize/list/call and
-negative identity, secret, duplicate-header, expiry, host, and startup cases.
-Local checks cannot prove Builder runtime activation or gateway token/header
-composition.
+The tests initialize MCP, discover `callback_probe`, and invoke it with synthetic
+credentials. They also check missing or incorrect credentials, duplicate headers,
+expiration, transport restrictions, and credential-safe denial logs.
 
-## Hosted configuration
+## 3. Configure an isolated hosted test
 
-Root `builder.yaml` declares one Python 3.14 web component, port 8080, explicit
-Uvicorn startup, and `/health` process liveness. Interactive API docs are disabled.
-Access logging is disabled. `/health` reveals no secret or configuration and does
-not exempt its public URL from Builder's authentication policy.
+On the **Access** step of the create-app wizard, require Entra authentication.
+After creation, use **Authentication** and **Identity** to manage these settings.
+Allow only your gateway's tenant and principal object ID. The gateway must obtain
+a token for your receiver application's audience.
 
-Set these **non-secret** application variables before building:
+Attach the app's user-assigned identity and grant it secret-read access to only
+the test secret. Set these nonsecret variables before deploying `builder.yaml`:
 
 | Variable | Value |
 |---|---|
-| `EXPECTED_GATEWAY_PRINCIPAL_ID` | Exact system-assigned gateway principal object-ID GUID |
-| `AZURE_CLIENT_ID` | Client-ID GUID of the user-assigned identity attached to Builder |
-| `KEY_VAULT_URI` | Exact public HTTPS vault origin, such as `https://<vault-name>.vault.azure.net` |
-| `KEY_VAULT_SECRET_NAME` | Name of the independently provisioned backend secret |
-| `CALLBACK_PUBLIC_HOST` | Builder app's actual lowercase hostname, without scheme, path or port |
-| `CALLBACK_TEST_EXPIRES_AT` | Approved absolute deadline as an ISO 8601 timestamp with timezone |
+| `EXPECTED_GATEWAY_PRINCIPAL_ID` | Gateway's principal object-ID GUID |
+| `AZURE_CLIENT_ID` | Attached identity's client-ID GUID |
+| `KEY_VAULT_URI` | `https://<vault-name>.vault.azure.net` |
+| `KEY_VAULT_SECRET_NAME` | Test secret's name |
+| `CALLBACK_PUBLIC_HOST` | App's lowercase hostname, without scheme or path |
+| `CALLBACK_TEST_EXPIRES_AT` | Absolute deadline with timezone, at most two hours ahead |
 
-At startup the app uses `ManagedIdentityCredential` and Azure Key Vault SDK to read
-the secret. The identity needs only secret-read permission on that one secret.
-The secret must be 32-256 printable ASCII characters and have a future Key Vault
-expiration. Loading failure or expired configuration prevents startup; there is
-no local-secret or anonymous fallback. No App Service Key Vault reference expansion
-is assumed. The value stays in memory and is removed from application state at
-shutdown.
+Use a 32-256-character printable ASCII secret with a matching future expiration.
+The app reads it through the Key Vault SDK at startup; Key Vault reference
+expansion isn't used. Loading failures prevent startup.
 
-Keep actual settings, secrets, source credentials, cloud responses, tokens,
-deployment receipts, and cleanup inventory outside Git. `.azure/`, `.env` files,
-private keys, generated archives, and receipt files are ignored. Review the
-publication diff rather than relying on ignore rules alone.
+Configure the dedicated ToolServer to call the app's `/mcp` endpoint with the
+gateway's managed identity and `x-appservice-mcp-secret` header. Keep the header
+value in your secret-management workflow, not application variables or Git.
+Grant the test caller Tools User access at that ToolServer only.
 
-## Cloud experiment boundaries
+Use the dedicated gateway preview's documented regional availability and pricing.
+Its current no-charge offering isn't a permanent `Free` SKU. Separate Builder
+and Key Vault resources can incur charges.
 
-Cloud creation and source connection require separate exact-target approval and
-the supported native Builder confirmations. This repository does not create
-resources, grant roles, request consent, install GitHub integration, or deploy
-automatically. Never substitute CLI operations for a disabled native action.
+## Verify the callback
 
-The intended small experiment uses a dedicated gateway in East US 2 and a
-protected Builder app in West US 2, one user-assigned identity and one Standard
-vault/secret. It needs no Foundry resource or model deployment. The documented
-dedicated gateway **public preview currently has no gateway charge**; this is not
-a permanent `Free` SKU. Do not substitute paid regular APIM Developer, Basic, or
-other tiers. Separately provisioned dependencies can incur charges.
+Through the gateway, initialize MCP, list tools, and call `callback_probe`.
+Require this actual tool result, not just HTTP 200:
 
-Required outcome matrix:
+```json
+{
+  "status": "ok",
+  "identity_verified": true,
+  "secret_verified": true,
+  "invocation_count": 1
+}
+```
 
-| Credentials / case | Expected result |
-|---|---|
-| No caller credential at gateway | Gateway denies; no successful tool call |
-| Backend secret only | Builder's required Entra gate denies |
-| Backend MI token only | Builder accepts identity; app rejects missing secret |
-| Backend MI token plus correct secret | Real discovery and tool call succeed |
-| Backend MI token plus wrong secret | App rejects; invocation count unchanged |
-| Wrong token audience | Builder rejects if the gateway actually acquired/sent a token |
-| Expired experiment | App rejects even previously valid credentials |
+The process-local count increases on subsequent successful calls. Missing caller
+authorization, either missing backend credential, a wrong secret, or a wrong
+audience must prevent a successful probe. Gateway errors can wrap upstream
+failures; inspect the MCP result too.
 
-The gateway may wrap a failed backend request in HTTP 200 with an MCP error.
-Assert the JSON-RPC/tool result, not HTTP status alone. Successful local tests
-are not evidence that the gateway executes MI and static headers together.
-Real token renewal across expiration is a separate qualification.
+Authorization denials log constant event names rather than header values.
+`/health` is process liveness, not callback verification, and its public URL
+remains protected by Builder authentication.
 
-References:
-[Builder authentication](https://builder.appservice.azure.com/docs/guides/authentication/),
-[Builder managed identity](https://builder.appservice.azure.com/docs/guides/managed-identity/),
-[Builder manifest](https://builder.appservice.azure.com/docs/guides/builder-yaml/),
-[dedicated gateway access](https://ai.gateway.azure.com/docs/security-identity),
-and [MCP access](https://ai.gateway.azure.com/docs/mcp-access).
+## Clean up resources
+
+Stop the test at its deadline. Remove only the test resources and grants you
+recorded when creating them: the caller role, ToolServer, receiver registration
+and its identity grants, Builder app, managed identity, and vault/secret.
+Respect Key Vault soft-delete retention; don't purge the vault or unregister a
+subscription-wide provider. Keep tokens, receipts, and cleanup inventory outside Git.
+
+## Related content
+
+- [Builder manifest](https://builder.appservice.azure.com/docs/guides/builder-yaml/)
+- [Dedicated gateway identity and access](https://ai.gateway.azure.com/docs/security-identity)
+- [Gateway MCP access](https://ai.gateway.azure.com/docs/mcp-access)

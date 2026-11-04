@@ -124,6 +124,24 @@ class CallbackTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
+    def test_identity_denial_logs_only_a_constant_event(self):
+        with self.assertLogs("callback_probe", level="WARNING") as captured:
+            response = self.rpc("tools/list", headers={PRINCIPAL_HEADER: SECRET})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            captured.output,
+            ["WARNING:callback_probe:callback_gateway_identity_required"],
+        )
+
+    def test_secret_denial_logs_only_a_constant_event(self):
+        with self.assertLogs("callback_probe", level="WARNING") as captured:
+            response = self.rpc("tools/list", headers={SECRET_HEADER: SECRET + "-wrong"})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            captured.output,
+            ["WARNING:callback_probe:callback_backend_secret_required"],
+        )
+
     def test_expiry_blocks_previously_valid_credentials(self):
         self.clock = NOW + timedelta(hours=2)
         response = self.rpc("tools/list")

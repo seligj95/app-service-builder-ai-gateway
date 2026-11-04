@@ -151,12 +151,14 @@ def create_app(
                 principals[0].lower().encode("utf-8"),
                 config.gateway_principal_id.lower().encode("utf-8"),
             ):
+                logger.warning("callback_gateway_identity_required")
                 return JSONResponse({"error": "gateway_identity_required"}, status_code=401)
             secrets = request.headers.getlist(SECRET_HEADER)
             expected = getattr(app.state, "callback_secret", b"")
             if not expected or len(secrets) != 1 or not hmac.compare_digest(
                 secrets[0].encode("utf-8"), expected
             ):
+                logger.warning("callback_backend_secret_required")
                 return JSONResponse({"error": "backend_secret_required"}, status_code=401)
         return await call_next(request)
 
