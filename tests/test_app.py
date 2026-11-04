@@ -1,8 +1,11 @@
 import base64
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import unittest
+from unittest.mock import patch
 
+from azure.identity.aio import ManagedIdentityCredential
 from fastapi.testclient import TestClient
 
 from app import ChatRequest, create_app
@@ -50,6 +53,18 @@ class FakeAgent:
         if self.fail:
             raise GatewayFailure("sensitive-upstream-content")
         yield "Builder."
+
+
+class StartupTests(unittest.TestCase):
+    def test_real_agent_and_async_identity_start_without_requesting_a_token(self):
+        app = create_app(settings(), now=lambda: NOW)
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(ManagedIdentityCredential, "get_token", side_effect=AssertionError("Unexpected token request")) as token,
+            TestClient(app, base_url=settings().origin) as client,
+        ):
+            self.assertEqual(client.get("/health").json(), {"status": "ok"})
+            token.assert_not_called()
 
 
 class AppTests(unittest.TestCase):
