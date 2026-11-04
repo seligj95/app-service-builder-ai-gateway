@@ -1,6 +1,7 @@
 import base64
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 import os
 import unittest
 from unittest.mock import patch
@@ -58,6 +59,7 @@ class FakeAgent:
 class StartupTests(unittest.TestCase):
     def test_real_agent_and_async_identity_start_without_requesting_a_token(self):
         app = create_app(settings(), now=lambda: NOW)
+        self.assertTrue(logging.getLogger("builder_gateway").isEnabledFor(logging.WARNING))
         with (
             patch.dict(os.environ, {}, clear=True),
             patch.object(ManagedIdentityCredential, "get_token", side_effect=AssertionError("Unexpected token request")) as token,

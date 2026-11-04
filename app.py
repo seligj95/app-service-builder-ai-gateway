@@ -88,6 +88,8 @@ def create_app(settings: Settings | None = None, agent=None, now=utc_now):
         return await call_next(context)
 
     server = MCPServer("builder-operations", log_level="CRITICAL", middleware=[fixed_arguments])
+    # MCP configures the root logger; preserve our constant-only diagnostics.
+    logger.setLevel(logging.WARNING)
     html = (STATIC / "index.html").read_text()
 
     def inline_hash(tag):
