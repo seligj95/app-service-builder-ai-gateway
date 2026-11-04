@@ -77,7 +77,7 @@ class AppTests(unittest.TestCase):
         headers = {"Host": ADC_HOST}
         page = self.client.get("/", headers=headers)
         self.assertEqual(page.status_code, 200)
-        self.assertIn("Chat through AI Gateway.", page.text)
+        self.assertIn("AI Gateway chat", page.text)
         response = self.client.post(
             "/api/chat/stream", headers=headers | {"Origin": settings().origin},
             json={"message": "Hello"},

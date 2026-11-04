@@ -48,7 +48,7 @@ html[data-theme="dark"] {
   --cp-border: #474747;
   --cp-border-strong: #5f5f5f;
   --cp-text: #dedede;
-  --cp-text-muted: #919191;
+  --cp-text-muted: #b0b0b0;
   --cp-text-soft: #b0b0b0;
   --cp-accent: #fd8ea1;
   --cp-accent-hover: #fb7b91;
@@ -70,36 +70,44 @@ html[data-theme="dark"] {
   <script src="/static/chat.js" defer></script>
 </head>
 <body>
+  <header class="app-header">
+    <div class="brand">
+      <h1>AI Gateway chat</h1>
+      <span>App Service Builder</span>
+    </div>
+    <span class="connection">Managed identity</span>
+  </header>
   <main>
-    <header>
-      <p class="eyebrow">APP SERVICE BUILDER / DEV &amp; TEST</p>
-      <h1>Chat through AI Gateway.</h1>
-      <p>Chat with a Python agent through a dedicated Azure AI Gateway.
-        Managed identities connect the app, gateway, and model.</p>
-    </header>
-    <section class="chat" aria-label="Gateway chat">
-      <div id="transcript" role="log" aria-label="Conversation" aria-live="off" tabindex="0">
-        <p class="hint">Ask a general question to try a streamed model response.
-          Don't enter secrets or personal data.</p>
-      </div>
-      <div class="prompts" aria-label="Example questions">
-        <button type="button" data-prompt="Explain AI Gateway in two sentences.">Explain AI Gateway</button>
-        <button type="button" data-prompt="Suggest a small Python web app idea.">Suggest an app idea</button>
-      </div>
-      <form id="chat-form">
-        <label for="message">Message</label>
-        <textarea id="message" rows="3" maxlength="4000" required
-          placeholder="Ask a question"></textarea>
-        <div class="actions">
-          <p id="status" role="status" aria-live="polite">Ready</p>
-          <button type="button" id="stop" hidden>Stop</button>
-          <button type="submit" id="send">Send message</button>
+    <section id="transcript" role="log" aria-label="Conversation" aria-live="off" tabindex="0">
+      <div id="empty-state">
+        <h2>What would you like to explore?</h2>
+        <p>A Python agent, connected through AI Gateway.</p>
+        <div class="prompts" aria-label="Example questions">
+          <button type="button" data-prompt="Explain AI Gateway in two sentences.">Explain AI Gateway <span aria-hidden="true">&rarr;</span></button>
+          <button type="button" data-prompt="Suggest a small Python web app idea.">Suggest an app idea <span aria-hidden="true">&rarr;</span></button>
         </div>
-      </form>
+      </div>
     </section>
-    <footer>Public, temporary demo: anyone can incur model charges.
-      Limits aren't a spending cap. Delete the resources after testing.
-      Each message starts a new conversation.</footer>
+    <div class="composer-shell">
+      <form id="chat-form">
+        <label for="message" class="visually-hidden">Message</label>
+        <textarea id="message" rows="1" maxlength="4000" required
+          placeholder="Ask a question..." aria-describedby="chat-help"></textarea>
+        <button type="button" id="stop" hidden>Stop</button>
+        <button type="submit" id="send" aria-label="Send message">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 19V5m-6 6 6-6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </form>
+      <div class="composer-meta">
+        <p id="status" role="status" aria-live="polite">Ready</p>
+        <p class="keyboard-hint">Enter to send / Shift+Enter for a new line</p>
+      </div>
+      <p id="chat-help">Each message starts fresh. Don't enter secrets or personal data.</p>
+      <footer>Public, temporary demo: anyone can incur model charges.
+        Limits aren't a spending cap. Delete resources after testing.</footer>
+    </div>
   </main>
 </body>
 </html>

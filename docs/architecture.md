@@ -4,8 +4,7 @@ The app sends Chat Completions requests to the dedicated AI Gateway alias
 `appservice-chat`. The gateway authenticates to the model account with its
 managed identity. Responses stream back to the browser as server-sent events.
 
-The hosted walkthrough is **Under construction**. The [README](../README.md)
-currently provides local checks.
+The [README](../README.md) provides the hosted walkthrough and optional local checks.
 
 ## Identity and access
 
@@ -72,6 +71,16 @@ isn't a subscription spending cap.
 
 Diagnostics contain constant event codes, not prompts, tokens, responses, or
 upstream bodies. Sensitive SDK instrumentation and Uvicorn access logs are off.
+
+## Browser interface
+
+The transcript uses the page's scroll rather than a nested scrolling panel.
+The bottom composer sends with Enter and inserts a newline with Shift+Enter.
+Suggested questions are empty-state helpers, not persistent controls over replies.
+Assistant Markdown is a deliberately small subset: paragraphs, headings, lists,
+emphasis, code and HTTP(S) links. It is built with allowlisted DOM nodes and text
+nodes; raw HTML and non-HTTP(S) links are never executed. Streaming and stopped
+output use the same renderer. No conversation history is sent to the model.
 
 ## Cleanup
 

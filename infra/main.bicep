@@ -141,3 +141,17 @@ output appIdentityId string = appIdentity.id
 output appIdentityClientId string = appIdentity.properties.clientId
 output builderAppName string = app.name
 output builderAppUrl string = 'https://${split(auth.properties.entraCallbackUrl, '/')[2]}'
+output sampleExpiresAt string = expiresAt
+output cleanupResourceIds array = [
+  appModels.id
+  inference.id
+  alias.id
+  backendModel.id
+  provider.id
+  model.id
+  account.id
+  gateway.id
+  app.id
+  auth.id
+  appIdentity.id
+]
