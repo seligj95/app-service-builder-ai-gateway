@@ -19,6 +19,9 @@ The model alias is `appservice-chat`. The ToolServer is `appservice-ops`, exposi
 The model behind the alias must support streaming Chat Completions, function
 tools, and `reasoning_effort: low`. Each completion is limited to 2,048 tokens,
 including reasoning, and each serialized model request to 32 KiB.
+For isolated tests, each app process stops at 80 gateway requests or 12 model
+requests. These in-memory counters reset on restart; track the whole test's
+budget separately, including probes, and don't restart to extend it.
 
 Only the dedicated `Microsoft.ApiManagement/aigateways` resource is intended
 here. Regular API Management services, subscription-key policies, and direct

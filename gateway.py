@@ -54,6 +54,8 @@ class GatewayAgent:
         self.settings = settings
         self.credential = credential
         self.transport = transport
+        self.gateway_requests = 0
+        self.model_requests = 0
 
     async def token(self):
         return (await self.credential.get_token(SCOPE)).token
@@ -84,6 +86,13 @@ class GatewayAgent:
                 if name in turn.tools_sent:
                     raise GatewayFailure("gateway_tool_replay_blocked")
                 turn.tools_sent.add(name)
+        model = request.url.path.endswith("/chat/completions")
+        if self.gateway_requests >= 80 or model and self.model_requests >= 12:
+            raise GatewayFailure("sample_request_budget_exhausted")
+        self.gateway_requests += 1
+        if model:
+            self.model_requests += 1
+        logger.warning("gateway_model_request_started" if model else "gateway_mcp_request_started")
 
     async def observe_response(self, turn: Turn, response: httpx.Response):
         if not response.request.url.path.endswith("/chat/completions"):

@@ -193,6 +193,24 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             _ = [text async for text in agent.stream("Hello")]
         self.assertEqual(wire.models, 1)
 
+    async def test_model_budget_persists_across_chat_turns_before_network(self):
+        wire = Wire(tool=None)
+        agent = GatewayAgent(settings(), Credential(), httpx.MockTransport(wire))
+        for _ in range(12):
+            self.assertTrue("".join([text async for text in agent.stream("Hello")]))
+        with self.assertRaises(GatewayFailure):
+            _ = [text async for text in agent.stream("Hello")]
+        self.assertEqual(wire.models, 12)
+
+    async def test_total_gateway_budget_is_exact(self):
+        agent = GatewayAgent(settings(), Credential())
+        request = httpx.Request("POST", settings().mcp_url, json={"method": "ping"})
+        for _ in range(80):
+            await agent.guard_request(Turn(), request)
+        with self.assertRaisesRegex(GatewayFailure, "budget_exhausted"):
+            await agent.guard_request(Turn(), request)
+        self.assertEqual(agent.gateway_requests, 80)
+
     async def test_retry_after_is_never_shortened_or_guessed(self):
         for hint in ("10", "nan", "-1", "invalid"):
             wire = Wire(tool=None, statuses=(429,))

@@ -224,12 +224,14 @@ def create_app(settings: Settings | None = None, agent=None, now=utc_now):
     @server.tool(name="get_service_status", annotations=annotation)
     async def get_service_status() -> dict[str, str]:
         """Return synthetic process liveness, not Azure resource health."""
+        logger.warning("tool_service_status_called")
         app.state.tool_calls["get_service_status"] += 1
         return {"service": config.app_name, "status": "healthy"}
 
     @server.tool(name="get_deployment_context", annotations=annotation)
     async def get_deployment_context() -> dict[str, str]:
         """Return explicitly configured nonsecret Builder deployment labels."""
+        logger.warning("tool_deployment_context_called")
         app.state.tool_calls["get_deployment_context"] += 1
         return {"app": config.app_name, "region": config.region, "environment": "DEV/TEST"}
 
