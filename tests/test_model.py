@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import unittest
 
@@ -60,6 +61,15 @@ class Wire:
 
 
 class GatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_expiry_blocks_outbound_dispatch_even_after_token_acquisition(self):
+        wire = Wire()
+        expired = settings(expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+        agent = GatewayAgent(expired, Credential(), httpx.MockTransport(wire))
+        with self.assertRaises(GatewayFailure):
+            _ = [text async for text in agent.stream("Hello")]
+        self.assertEqual(wire.requests, [])
+        self.assertEqual(agent.model_requests, 0)
+
     async def test_real_agent_framework_streams_one_model_call_without_tools(self):
         wire = Wire()
         agent = GatewayAgent(settings(), Credential(), httpx.MockTransport(wire))

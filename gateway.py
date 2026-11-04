@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 import math
 from typing import Literal
@@ -51,6 +52,8 @@ class GatewayAgent:
 
     async def guard_request(self, turn: Turn, request: httpx.Request):
         expected = self.settings
+        if datetime.now(timezone.utc) >= expected.expires_at:
+            raise GatewayFailure("sample_expired")
         if (
             request.url.scheme != "https" or request.url.host != expected.gateway_host
             or request.url.port not in (None, 443)
