@@ -1,4 +1,4 @@
-"""Protected Builder chat streaming model responses through AI Gateway."""
+"""Temporary public Builder demo streaming model responses through AI Gateway."""
 
 import asyncio
 import base64
@@ -9,6 +9,7 @@ import hashlib
 import logging
 import re
 from pathlib import Path
+from time import monotonic
 from uuid import uuid4
 
 from azure.identity.aio import ManagedIdentityCredential
@@ -19,7 +20,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from config import Settings
 from gateway import GatewayAgent, GatewayFailure
-from identity import verified_identity
 
 
 logger = logging.getLogger("builder_gateway")
@@ -91,6 +91,7 @@ def create_app(settings: Settings | None = None, agent=None, now=utc_now):
             credential = ManagedIdentityCredential(client_id=config.identity_client_id)
         app.state.agent = agent if agent is not None else GatewayAgent(config, credential)
         app.state.active_chats = 0
+        app.state.next_chat_at = 0
         try:
             logger.warning("sample_dev_test_ready")
             yield
@@ -102,36 +103,12 @@ def create_app(settings: Settings | None = None, agent=None, now=utc_now):
     app.add_middleware(BodyLimit)
 
     @app.middleware("http")
-    async def authorize(request: Request, call_next):
+    async def demo_window(request: Request, call_next):
         path = request.scope["path"]
         if path == "/health":
             return await call_next(request)
-        # Builder replaces this header; Host is its internal routing destination.
-        public_hosts = (
-            request.headers.getlist("x-forwarded-host")
-            if "x-forwarded-host" in request.headers else request.headers.getlist("host")
-        )
-        if len(request.headers.getlist("host")) != 1 or public_hosts != [config.public_host]:
-            error = {"error": "invalid_host"}
-            if verified_identity(request, config) in config.chat_user_ids:
-                def hostname_values(name):
-                    values = request.headers.getlist(name)
-                    return [
-                        value if re.fullmatch(r"[A-Za-z0-9.,: -]{1,253}", value) else "invalid"
-                        for value in values[:3]
-                    ]
-                error["hostDiagnostic"] = {
-                    "transport": hostname_values("host"),
-                    "forwarded": hostname_values("x-forwarded-host"),
-                    "configured": config.public_host,
-                }
-            return JSONResponse(error, status_code=400)
         if now() >= config.expires_at:
             return JSONResponse({"error": "sample_expired"}, status_code=403)
-        identity = verified_identity(request, config)
-        if identity not in config.chat_user_ids:
-            logger.warning("chat_identity_denied")
-            return JSONResponse({"error": "identity_required"}, status_code=401)
         return await call_next(request)
 
     @app.middleware("http")
@@ -177,6 +154,13 @@ def create_app(settings: Settings | None = None, agent=None, now=utc_now):
             return JSONResponse({"error": "invalid_request"}, status_code=422)
         if app.state.active_chats >= 2:
             return JSONResponse({"error": "chat_busy"}, status_code=429)
+        instant = monotonic()
+        if instant < app.state.next_chat_at:
+            return JSONResponse(
+                {"error": "request_rate_limited"}, status_code=429,
+                headers={"Retry-After": "5"},
+            )
+        app.state.next_chat_at = instant + 5
         correlation = str(uuid4())
 
         async def events():

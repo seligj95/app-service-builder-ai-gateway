@@ -6,7 +6,7 @@ import httpx2 as httpx
 
 from config import MODEL_ALIAS
 from gateway import GatewayAgent, GatewayFailure, SCOPE, Turn
-from test_app import settings
+from test_http import settings
 
 
 class Credential:

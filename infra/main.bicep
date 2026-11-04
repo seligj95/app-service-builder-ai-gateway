@@ -8,6 +8,8 @@ param namePrefix string = 'aigw'
 param gatewayName string = '${namePrefix}${uniqueString(resourceGroup().id)}'
 param modelAccountName string = 'ai${uniqueString(resourceGroup().id)}'
 param appIdentityName string = 'id-${gatewayName}'
+param appName string = gatewayName
+param expiresAt string = dateTimeAdd(utcNow(), 'PT2H')
 
 var modelName = 'gpt-5.4-mini'
 var modelVersion = '2026-03-17'
@@ -104,6 +106,38 @@ resource appModels 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+resource app 'Microsoft.Web/builderApps@2026-09-01-preview' = {
+  name: appName
+  location: 'westus2'
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${appIdentity.id}': {} }
+  }
+  properties: {}
+}
+
+resource auth 'Microsoft.Web/builderApps/authConfigs@2026-09-01-preview' = {
+  parent: app
+  name: 'current'
+  properties: {
+    mode: 'disabled'
+  }
+}
+
+module settings 'app-settings.bicep' = {
+  name: 'configure-builder-app'
+  params: {
+    appName: app.name
+    gatewayHost: gateway.properties.frontend.defaultHostname
+    identityId: appIdentity.id
+    identityClientId: appIdentity.properties.clientId
+    publicHost: split(auth.properties.entraCallbackUrl, '/')[2]
+    expiresAt: expiresAt
+  }
+}
+
 output gatewayHost string = gateway.properties.frontend.defaultHostname
 output appIdentityId string = appIdentity.id
 output appIdentityClientId string = appIdentity.properties.clientId
+output builderAppName string = app.name
+output builderAppUrl string = 'https://${split(auth.properties.entraCallbackUrl, '/')[2]}'

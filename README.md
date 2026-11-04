@@ -7,7 +7,7 @@ identity to call the gateway; the gateway uses its identity to call the model.
 In this tutorial, you learn how to:
 
 - Check the Python agent locally.
-- Protect chat with Builder-managed sign-in.
+- Use workload managed identities without visitor sign-in.
 - Stream a model response through the gateway.
 
 The hosted integration is **Under construction**. The steps below run local
@@ -18,9 +18,10 @@ checks without Azure resources. They don't deploy or qualify the hosted sample.
 - Python 3.14 and Git.
 
 > [!IMPORTANT]
-> The hosted app depends on Builder's required Entra authentication to validate
-> tokens and replace incoming identity headers. Don't expose Uvicorn directly.
-> Use an isolated DEV/TEST environment and a test window of at most two hours.
+> This is a public demo: anyone can invoke the app and incur model charges.
+> Its in-process limits aren't authentication or a spending cap.
+> Use synthetic prompts, an isolated DEV/TEST environment and a test window of
+> at most two hours, then delete the resources.
 
 ## 1. Set up Python
 
@@ -36,18 +37,18 @@ python3 -m venv .venv
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
-.venv/bin/python -m compileall -q app.py config.py gateway.py identity.py tests
+.venv/bin/python -m compileall -q app.py config.py gateway.py tests
 .venv/bin/python -m pip check
 ```
 
-The checks use synthetic identities and mocked HTTP responses with the installed
+The checks use mocked managed identity and HTTP responses with the installed
 Agent Framework and OpenAI clients. They don't sign in, send inference
 requests, or create cloud resources.
 
 ## Verify
 
-The test suite finishes with `OK`. It checks browser SSE output, exact-user
-access, expiration, bounded input, credential-safe failures, and model requests
+The test suite finishes with `OK`. It checks anonymous browser SSE output, exact
+Origin checking, expiration, bounded input, admission throttling, credential-safe failures, and model requests
 sent only to the configured gateway.
 
 The agent can retry one rejected model request before an accepted response or

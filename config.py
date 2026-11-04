@@ -21,19 +21,12 @@ def guid(value: str) -> str:
 @dataclass(frozen=True)
 class Settings:
     gateway_host: str
-    tenant_id: str
-    chat_user_ids: tuple[str, ...]
     identity_client_id: str
     public_host: str
     expires_at: datetime
 
     def __post_init__(self):
-        for field in ("tenant_id", "identity_client_id"):
-            object.__setattr__(self, field, guid(getattr(self, field)))
-        users = tuple(guid(value) for value in self.chat_user_ids)
-        if not 1 <= len(users) <= 20 or len(set(users)) != len(users):
-            raise ValueError("Configure 1-20 distinct chat identities")
-        object.__setattr__(self, "chat_user_ids", users)
+        object.__setattr__(self, "identity_client_id", guid(self.identity_client_id))
         if not re.fullmatch(r"[a-z0-9-]+\.[a-z0-9-]+\.ai\.gateway\.azure\.com", self.gateway_host):
             raise ValueError("Configure a dedicated Azure AI Gateway hostname")
         if not re.fullmatch(r"[a-z0-9-]+\.app\.westus2\.builderapps\.dev", self.public_host):
@@ -54,8 +47,6 @@ class Settings:
         env = os.environ if source is None else source
         return cls(
             gateway_host=env["AZURE_AI_GATEWAY_HOST"],
-            tenant_id=env["ENTRA_TENANT_ID"],
-            chat_user_ids=tuple(env["CHAT_USER_OBJECT_IDS"].split(",")),
             identity_client_id=env["AZURE_CLIENT_ID"],
             public_host=env["APP_PUBLIC_HOST"],
             expires_at=datetime.fromisoformat(env["SAMPLE_EXPIRES_AT"]),

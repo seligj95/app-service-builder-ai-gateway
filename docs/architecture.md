@@ -9,24 +9,22 @@ currently provides local checks.
 
 ## Identity and access
 
-Use Builder-managed Microsoft Entra sign-in with **Sign-in** set to **Required**.
-Pin the tenant and approved user object IDs in Builder and in the app settings.
-You don't need a customer app registration or application secret.
-Follow the shared [authentication](https://builder.appservice.azure.com/docs/guides/authentication/)
-and [managed identity](https://builder.appservice.azure.com/docs/guides/managed-identity/)
-instructions.
+Visitor sign-in is disabled for this temporary public demo. Anyone can invoke
+the app and incur model charges. Use synthetic prompts only and delete the
+resources after testing. Workload managed identity remains enabled; follow the
+shared [managed identity](https://builder.appservice.azure.com/docs/guides/managed-identity/)
+instructions. No user token or on-behalf-of flow is sent to AI Gateway.
 
 | Identity | Access |
 |---|---|
-| Approved users | Builder sign-in and exact tenant/object-ID rules |
 | App user-assigned managed identity | AI Gateway Models User on the `appservice-chat` alias |
 | Gateway managed identity | Cognitive Services OpenAI User on the model account |
 
-Builder verifies the visitor and replaces incoming identity and forwarding
-headers. The app checks those trusted claims and the exact `X-Forwarded-Host`
-before allowing chat; the transport `Host` is an internal routing destination.
-Don't expose Uvicorn directly
-or disable Builder authentication.
+The canonical public origin is configured explicitly. Chat requires that exact
+Origin header; transport Host and forwarded headers never select links,
+redirects, authorization or credential destinations. Builder may route with an
+internal ADC Host and no forwarded hostname. Origin checking is a browser
+cross-origin safeguard, not authentication or a spending cap.
 
 The app has no tools or callback endpoint. It can't inspect your Azure
 deployments. Model requests never fall back to a direct provider.
@@ -39,8 +37,6 @@ Set these nonsecret variables through Builder:
 |---|---|
 | `AZURE_AI_GATEWAY_HOST` | Returned dedicated gateway hostname, without scheme or path |
 | `AZURE_CLIENT_ID` | Attached app identity's client-ID GUID |
-| `ENTRA_TENANT_ID` | Approved users' tenant GUID |
-| `CHAT_USER_OBJECT_IDS` | Comma-separated list of 1-20 approved user object-ID GUIDs |
 | `APP_PUBLIC_HOST` | Returned `<app>.app.westus2.builderapps.dev` hostname |
 | `SAMPLE_EXPIRES_AT` | Timezone-aware deadline, at most two hours ahead |
 
@@ -63,13 +59,14 @@ Use a streaming Chat Completions model that accepts `reasoning_effort: low`.
 Requests use the stable alias rather than a physical deployment name.
 Each response allows 2,048 completion tokens, including reasoning.
 
-The app accepts up to 4,000 message characters, two concurrent chats, and a
+The app accepts up to 4,000 message characters, one new chat every five seconds
+per process, two concurrent chats, and a
 60-second gateway operation. It retries at most once for a rejected 429/503
 before an accepted response or output, honoring a Retry-After of at most two
 seconds. It never follows redirects or replays partial output.
 
 The DEV/TEST process stops after 12 model requests or the configured deadline.
-These counters reset on restart; track total use separately and don't restart
+These in-process limits reset on restart and multiply with scaling; track total use separately and don't restart
 to extend an approved test budget. Delete resources when finished; this guard
 isn't a subscription spending cap.
 
