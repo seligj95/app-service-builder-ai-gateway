@@ -1,0 +1,15 @@
+.azure/
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+*.zip
+*.pem
+*.key
+*.pfx
+cleanup-inventory*.json
+*receipt*.json
