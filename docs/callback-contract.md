@@ -1,67 +1,115 @@
-# Protected callback contract
+# Connect models and protected tools
 
-The hosted integration is **Under construction**. These requirements describe
-the intended contract, not a runnable deployment tutorial. Configuration
-acceptance and local tests don't establish combined credential delivery.
+The hosted integration is **Under construction**. This page describes its
+required architecture, not a deployment walkthrough. Use the
+[local checks](../README.md) until hosted setup is ready.
 
-## Identity and secret
+## Request flow
 
-A hosted test needs an isolated Builder app, dedicated AI Gateway, user-assigned
-managed identity, Key Vault secret, and permission to configure narrow access.
-Use the shared [authentication](https://builder.appservice.azure.com/docs/guides/authentication/)
+An approved user opens the Builder app and sends a chat message. The app's
+user-assigned managed identity calls a dedicated AI Gateway model alias. Agent
+Framework invokes either of the gateway's two read-only MCP tools as needed.
+The gateway authenticates to the app's `/mcp` endpoint with its own managed
+identity. The model then streams its answer through Builder to the browser.
+
+The model alias is `appservice-chat`. The ToolServer is `appservice-ops`, exposing
+`appservice-ops_get_service_status` and
+`appservice-ops_get_deployment_context`. Both tools accept no arguments.
+
+The model behind the alias must support streaming Chat Completions, function
+tools, and `reasoning_effort: low`. Each completion is limited to 2,048 tokens,
+including reasoning, and each serialized model request to 32 KiB.
+
+Only the dedicated `Microsoft.ApiManagement/aigateways` resource is intended
+here. Regular API Management services, subscription-key policies, and direct
+Foundry or OpenAI URLs aren't interchangeable configuration.
+
+## Identity boundaries
+
+Use the shared Builder [authentication](https://builder.appservice.azure.com/docs/guides/authentication/)
 and [managed identity](https://builder.appservice.azure.com/docs/guides/managed-identity/)
-guides for supported Builder setup.
+guides. Keep required customer Entra authentication enabled.
 
-The app's required Entra policy must allow only the gateway's tenant and principal
-object ID. The gateway needs a token for the receiver application's audience.
-Builder must replace caller-supplied identity headers with verified identity.
-The fixture doesn't validate bearer tokens itself.
+| Caller | Required access |
+|---|---|
+| Approved browser users | Receiver's User-only `Chat.Use` app role and exact user object-ID allowlists |
+| Builder app identity | `AI Gateway Models User` on the model alias and `AI Gateway Tools User` on the ToolServer |
+| Gateway identity | Receiver's Application-only `Callback.Invoke` app role and exact gateway object-ID allowlists |
+| Gateway identity to Foundry | Inference permission on the selected model account |
 
-The fixture emits a constant DEV/TEST startup notice after loading its secret and
-starting MCP. Denial events distinguish missing, duplicate and mismatched
-credentials without recording their values. Verify diagnostic delivery before a
-hosted credential test.
+Pin the receiver to one tenant and API audience. Require assignment on its
+service principal. Configure Builder's provider object-ID rules for only the
+gateway and approved users; a tenant-only or email rule would broaden access.
+Configure the receiver's returned browser redirect URI and the supported Builder
+identity/federation setup before enabling browser sign-in.
 
-The attached app identity needs read access to only the test secret. The fixture
-expects these nonsecret variables:
+App-role assignments control token issuance. Builder doesn't enforce or forward
+the role values to this app. The app authorizes the verified tenant and object
+ID: only the gateway can use `/mcp`, and only the configured humans can use chat
+and static assets. Human access never grants tool-callback access.
+
+The callback uses exact-principal Entra authentication, not an additional shared
+secret. No callback secret, Key Vault lookup, or Key Vault reference expansion is
+required. Don't disable the Builder authentication boundary to make a callback
+work.
+
+## Application settings
+
+Configure these nonsecret variables through Builder. Don't commit actual
+identities, tokens, deployment receipts, or cleanup inventory.
 
 | Variable | Value |
 |---|---|
-| `EXPECTED_GATEWAY_PRINCIPAL_ID` | Gateway's principal object-ID GUID |
-| `AZURE_CLIENT_ID` | Attached identity's client-ID GUID |
-| `KEY_VAULT_URI` | `https://<vault-name>.vault.azure.net` |
-| `KEY_VAULT_SECRET_NAME` | Test secret's name |
-| `CALLBACK_PUBLIC_HOST` | App's lowercase hostname, without scheme or path |
-| `CALLBACK_TEST_EXPIRES_AT` | Absolute deadline with timezone, at most two hours ahead |
+| `AZURE_AI_GATEWAY_HOST` | Returned dedicated gateway hostname, without scheme or path |
+| `EXPECTED_GATEWAY_PRINCIPAL_ID` | Gateway identity's principal object-ID GUID |
+| `ENTRA_TENANT_ID` | Required receiver tenant GUID |
+| `CHAT_USER_OBJECT_IDS` | Comma-separated list of 1-20 approved human object-ID GUIDs |
+| `AZURE_CLIENT_ID` | Attached Builder identity's client-ID GUID |
+| `CALLBACK_PUBLIC_HOST` | Returned `<app>.app.westus2.builderapps.dev` hostname |
+| `SAMPLE_EXPIRES_AT` | Absolute timezone-aware deadline, at most two hours ahead |
+| `SAMPLE_APP_NAME` | Optional nonsecret label; default `builder-gateway-agent` |
+| `SAMPLE_REGION` | Optional nonsecret label; default `westus2` |
 
-Use a 32-256-character printable ASCII secret with a matching future expiration.
-The app reads it through the Key Vault SDK at startup; Key Vault reference
-expansion isn't used. Loading failures prevent startup.
+The app requests gateway tokens with scope
+`https://azure-api.net/aigateway/.default`. Model requests use
+`https://<gateway-host>/default/models/openai/v1/`; tool requests use
+`https://<gateway-host>/default/toolservers/appservice-ops/mcp`.
 
-Qualification requires the dedicated ToolServer to deliver both its managed
-identity token and the `x-appservice-mcp-secret` header to `/mcp`. Keep the secret
-out of application variables and Git. The test caller needs Tools User access
-at that ToolServer only.
+The gateway's backend managed-identity resource must match the receiver's
+application ID URI, such as `api://<receiver-client-id>`. Its model provider uses
+the gateway identity to reach Foundry.
 
-Use the dedicated gateway preview's documented regional availability and pricing.
-Its current no-charge offering isn't a permanent `Free` SKU. Separate Builder
-and Key Vault resources can incur charges.
+Confirm dedicated-tier region availability and model quota before creating
+resources. Builder is in West US 2; placing the gateway or model elsewhere adds
+cross-region latency and data transit. The dedicated preview's no-charge offer
+isn't a permanent Free SKU. Builder, model capacity/inference, and optional
+monitoring can incur separate charges.
 
-## Acceptance criteria
+## Verification requirements
 
-Through the gateway, MCP initialization, discovery and `callback_probe` must
-return the successful result described in the [local checks](../README.md#verify).
-Missing caller authorization, either missing backend credential, a wrong secret,
-or a wrong audience must prevent a successful probe.
+Check browser sign-in, a complete SSE response, and answers to both example
+questions. Each example must call its matching tool through the gateway.
+Inspect the MCP result, not only the outer HTTP status.
 
-Gateway errors can wrap upstream failures; HTTP 200 alone isn't success. Check
-the MCP result. `/health` is process liveness, not callback verification, and its
-public URL must remain protected by Builder authentication.
+Verify that anonymous callers, the wrong tenant or principal, and users calling
+`/mcp` are denied. The gateway must be denied chat access. Wrong audiences must
+be rejected by Builder before the app. At expiration, application routes deny
+access; `/health` remains process liveness and must still be protected at the
+Builder boundary.
+
+Don't enter secrets or personal data in chat. Application diagnostics contain
+constant event codes, not prompts, tokens, tool payloads, or upstream errors.
+Agent Framework instrumentation is disabled; don't enable sensitive SDK tracing
+or HTTP access/body logging.
 
 ## Cleanup
 
-Stop a hosted test at its deadline. Remove only the test resources and grants
-recorded when creating them: the caller role, ToolServer, receiver registration
-and its identity grants, Builder app, managed identity, and vault/secret.
-Respect Key Vault soft-delete retention; don't purge the vault or unregister a
-subscription-wide provider. Keep tokens, receipts, and cleanup inventory outside Git.
+Record each created resource ID, Entra object ID, assignment ID, and owner when
+provisioning. At the deadline, stop requests and delete only that inventory:
+model deployment/account, gateway and children, narrow RBAC assignments,
+receiver and its grants, Builder app, and managed identity. Remove optional
+monitoring resources only if this test created them.
+
+Verify deletion completion, including asynchronous operations. Preserve
+pre-existing shared resources and subscription-wide provider registrations.
+Keep the cleanup ledger outside Git.

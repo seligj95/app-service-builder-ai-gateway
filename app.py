@@ -1,197 +1,237 @@
-"""Disposable protected MCP callback fixture; not an agent or model demo."""
+"""Builder-hosted SSE agent and two protected, read-only MCP tools."""
 
 import asyncio
-from collections.abc import Callable
+import base64
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import hmac
+import json
+import hashlib
 import logging
-import os
 import re
-from urllib.parse import urlsplit
-from uuid import UUID
+from pathlib import Path
+from uuid import uuid4
 
-from azure.core.exceptions import AzureError
-from azure.identity import ManagedIdentityCredential
-from azure.keyvault.secrets import SecretClient
+from azure.identity.aio import ManagedIdentityCredential
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import ToolAnnotations
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from pydantic import BaseModel, ConfigDict, Field
+
+from config import Settings
+from gateway import GatewayAgent, GatewayFailure
+from identity import verified_identity
 
 
-logger = logging.getLogger("callback_probe")
-SECRET_HEADER = "x-appservice-mcp-secret"
-PRINCIPAL_HEADER = "x-ms-client-principal-id"
+logger = logging.getLogger("builder_gateway")
+STATIC = Path(__file__).parent / "static"
 
 
-def utc_now() -> datetime:
+class BodyLimit:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST":
+            await self.app(scope, receive, send)
+            return
+        chunks = []
+        size = 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            size += len(chunk)
+            if size > 16_384:
+                await JSONResponse({"error": "request_too_large"}, status_code=413)(scope, receive, send)
+                return
+            if chunk:
+                chunks.append(chunk)
+            if not message.get("more_body"):
+                break
+        delivered = False
+
+        async def replay():
+            nonlocal delivered
+            if not delivered:
+                delivered = True
+                return {"type": "http.request", "body": b"".join(chunks)}
+            return await receive()
+
+        await self.app(scope, replay, send)
+
+
+def utc_now():
     return datetime.now(timezone.utc)
 
 
-@dataclass(frozen=True)
-class Settings:
-    gateway_principal_id: str
-    identity_client_id: str
-    vault_url: str
-    secret_name: str
-    public_host: str
-    expires_at: datetime
-
-    def __post_init__(self) -> None:
-        UUID(self.gateway_principal_id)
-        UUID(self.identity_client_id)
-        vault = urlsplit(self.vault_url)
-        if (
-            vault.scheme != "https"
-            or not vault.hostname
-            or not re.fullmatch(r"[a-z0-9-]+\.vault\.azure\.net", vault.hostname)
-            or vault.netloc != vault.hostname
-            or vault.path not in ("", "/")
-            or vault.query
-            or vault.fragment
-        ):
-            raise ValueError("KEY_VAULT_URI must be a public Azure Key Vault HTTPS origin")
-        if not re.fullmatch(r"[A-Za-z0-9-]{1,127}", self.secret_name):
-            raise ValueError("KEY_VAULT_SECRET_NAME is invalid")
-        if not re.fullmatch(
-            r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", self.public_host
-        ):
-            raise ValueError("CALLBACK_PUBLIC_HOST must be a lowercase hostname")
-        if self.expires_at.tzinfo is None:
-            raise ValueError("CALLBACK_TEST_EXPIRES_AT must include a timezone")
-
-    @classmethod
-    def from_env(cls) -> "Settings":
-        return cls(
-            gateway_principal_id=os.environ["EXPECTED_GATEWAY_PRINCIPAL_ID"],
-            identity_client_id=os.environ["AZURE_CLIENT_ID"],
-            vault_url=os.environ["KEY_VAULT_URI"],
-            secret_name=os.environ["KEY_VAULT_SECRET_NAME"],
-            public_host=os.environ["CALLBACK_PUBLIC_HOST"],
-            expires_at=datetime.fromisoformat(os.environ["CALLBACK_TEST_EXPIRES_AT"]),
-        )
+class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str = Field(min_length=1, max_length=4000)
 
 
-def load_secret(settings: Settings) -> str:
-    try:
-        with (
-            ManagedIdentityCredential(client_id=settings.identity_client_id) as credential,
-            SecretClient(
-                vault_url=settings.vault_url,
-                credential=credential,
-                connection_timeout=10,
-                read_timeout=10,
-                retry_total=2,
-            ) as client,
-        ):
-            secret = client.get_secret(settings.secret_name)
-    except AzureError:
-        logger.error("callback_secret_unavailable")
-        raise RuntimeError("Callback secret could not be loaded") from None
-    if secret.properties.expires_on is None or secret.properties.expires_on <= utc_now():
-        raise RuntimeError("Callback secret must have a future expiration")
-    return secret.value or ""
-
-
-def create_app(
-    settings: Settings | None = None,
-    secret_loader: Callable[[], str] | None = None,
-    now: Callable[[], datetime] = utc_now,
-) -> FastAPI:
+def create_app(settings: Settings | None = None, agent=None, now=utc_now):
     config = settings if settings is not None else Settings.from_env()
-    # SDK warning messages include raw Host/Origin values; HTTP errors remain explicit.
-    logging.getLogger("mcp.server.transport_security").setLevel(logging.ERROR)
-    server = MCPServer("callback-compatibility", log_level="WARNING")
+    logging.getLogger("mcp.server.transport_security").setLevel(logging.CRITICAL + 1)
+
+    async def fixed_arguments(context, call_next):
+        if context.method == "tools/call" and isinstance(context.params, dict):
+            if context.params.get("arguments", {}) != {}:
+                logger.warning("tool_arguments_rejected")
+                return CallToolResult(
+                    content=[TextContent(type="text", text="This tool accepts no arguments.")],
+                    isError=True,
+                )
+        return await call_next(context)
+
+    server = MCPServer("builder-operations", log_level="CRITICAL", middleware=[fixed_arguments])
+    html = (STATIC / "index.html").read_text()
+
+    def inline_hash(tag):
+        text = re.search(f"<{tag}>(.*?)</{tag}>", html, re.DOTALL).group(1)
+        digest = base64.b64encode(hashlib.sha256(text.encode()).digest()).decode()
+        return f"'sha256-{digest}'"
+
+    script_hash, style_hash = inline_hash("script"), inline_hash("style")
     transport = server.streamable_http_app(
-        json_response=True,
-        stateless_http=True,
-        max_request_body_size=16_384,
+        json_response=True, stateless_http=True, max_request_body_size=16_384,
         transport_security=TransportSecuritySettings(
             allowed_hosts=[config.public_host, f"{config.public_host}:*"],
-            allowed_origins=[f"https://{config.public_host}"],
+            allowed_origins=[config.origin],
         ),
     )
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        if now() >= config.expires_at:
-            raise RuntimeError("Callback experiment has expired")
-        if config.expires_at - now() > timedelta(hours=2):
-            raise RuntimeError("Callback experiment cannot exceed two hours")
-        value = await asyncio.to_thread(
-            secret_loader if secret_loader is not None else lambda: load_secret(config)
-        )
-        if not isinstance(value, str) or not re.fullmatch(r"[!-~]{32,256}", value):
-            raise RuntimeError("Callback secret must be 32-256 printable ASCII characters")
-        app.state.callback_secret = value.encode("ascii")
-        app.state.successful_calls = 0
+    async def lifespan(app):
+        if not timedelta(0) < config.expires_at - now() <= timedelta(hours=2):
+            raise RuntimeError("The isolated DEV/TEST window must be within two hours")
+        credential = None
+        if agent is None:
+            credential = ManagedIdentityCredential(client_id=config.identity_client_id)
+        app.state.agent = agent if agent is not None else GatewayAgent(config, credential)
+        app.state.active_chats = 0
+        app.state.tool_calls = {"get_service_status": 0, "get_deployment_context": 0}
         try:
             async with transport.router.lifespan_context(transport):
-                logger.warning("callback_fixture_dev_test_only")
+                logger.warning("sample_dev_test_ready")
                 yield
         finally:
-            app.state.callback_secret = b""
+            if credential is not None:
+                await credential.close()
 
-    app = FastAPI(
-        lifespan=lifespan,
-        docs_url=None,
-        redoc_url=None,
-        openapi_url=None,
-    )
+    app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(BodyLimit)
 
     @app.middleware("http")
-    async def authorize_callback(request: Request, call_next):
-        if request.url.path == "/mcp" or request.url.path.startswith("/mcp/"):
-            if now() >= config.expires_at:
-                return JSONResponse({"error": "experiment_expired"}, status_code=403)
-            principals = request.headers.getlist(PRINCIPAL_HEADER)
-            if len(principals) != 1 or not hmac.compare_digest(
-                principals[0].lower().encode("utf-8"),
-                config.gateway_principal_id.lower().encode("utf-8"),
-            ):
-                reason = "missing" if not principals else "duplicate" if len(principals) > 1 else "mismatch"
-                logger.warning("callback_gateway_identity_%s", reason)
-                return JSONResponse({"error": "gateway_identity_required"}, status_code=401)
-            secrets = request.headers.getlist(SECRET_HEADER)
-            expected = getattr(app.state, "callback_secret", b"")
-            if not expected or len(secrets) != 1 or not hmac.compare_digest(
-                secrets[0].encode("utf-8"), expected
-            ):
-                reason = (
-                    "unavailable" if not expected
-                    else "missing" if not secrets
-                    else "duplicate" if len(secrets) > 1
-                    else "mismatch"
-                )
-                logger.warning("callback_backend_secret_%s", reason)
-                return JSONResponse({"error": "backend_secret_required"}, status_code=401)
+    async def authorize(request: Request, call_next):
+        path = request.scope["path"]
+        if path == "/health":
+            return await call_next(request)
+        if request.headers.getlist("host") != [config.public_host]:
+            return JSONResponse({"error": "invalid_host"}, status_code=400)
+        if now() >= config.expires_at:
+            return JSONResponse({"error": "sample_expired"}, status_code=403)
+        identity = verified_identity(request, config)
+        mcp = path == "/mcp" or path.startswith("/mcp/")
+        allowed = identity == config.gateway_principal_id if mcp else identity in config.chat_user_ids
+        if not allowed:
+            logger.warning("callback_identity_denied" if mcp else "chat_identity_denied")
+            return JSONResponse({"error": "identity_required"}, status_code=401)
         return await call_next(request)
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = (
+            f"default-src 'self'; connect-src 'self'; script-src 'self' {script_hash}; "
+            f"style-src 'self' {style_hash}; "
+            "img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(_request, _error):
+        return JSONResponse({"error": "invalid_request"}, status_code=422)
 
     @app.get("/health")
     async def health():
         return {"status": "ok"}
 
-    @server.tool(
-        name="callback_probe",
-        description="Return a synthetic result after both callback authorization checks.",
-        annotations=ToolAnnotations(
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=False,
-            openWorldHint=False,
-        ),
+    @app.get("/")
+    async def home():
+        return FileResponse(STATIC / "index.html")
+
+    @app.get("/favicon.ico")
+    async def favicon():
+        return Response(status_code=204)
+
+    @app.get("/static/{name}")
+    async def static(name: str):
+        if name not in ("chat.js", "site.css"):
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        return FileResponse(STATIC / name)
+
+    @app.post("/api/chat/stream")
+    async def chat(request: Request, payload: ChatRequest):
+        if request.headers.getlist("origin") != [config.origin]:
+            return JSONResponse({"error": "same_origin_required"}, status_code=403)
+        if not payload.message.strip():
+            return JSONResponse({"error": "invalid_request"}, status_code=422)
+        if app.state.active_chats >= 2:
+            return JSONResponse({"error": "chat_busy"}, status_code=429)
+        correlation = str(uuid4())
+
+        async def events():
+            def sse(event, data):
+                return f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
+
+            if app.state.active_chats >= 2:
+                yield sse("error", {"code": "chat_busy", "message": "Two chats are already active."})
+                yield sse("done", {})
+                return
+            app.state.active_chats += 1
+            logger.warning("chat_started")
+            try:
+                yield sse("meta", {"correlationId": correlation})
+                async with asyncio.timeout(65):
+                    async for text in app.state.agent.stream(payload.message):
+                        if now() >= config.expires_at:
+                            raise GatewayFailure("sample_expired")
+                        yield sse("delta", {"text": text})
+                yield sse("done", {})
+            except (GatewayFailure, TimeoutError):
+                logger.warning("chat_failed")
+                yield sse("error", {"code": "gateway_unavailable", "message": "The gateway request failed."})
+                yield sse("done", {})
+            finally:
+                app.state.active_chats -= 1
+
+        return StreamingResponse(
+            events(), media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "X-Correlation-Id": correlation},
+        )
+
+    annotation = ToolAnnotations(
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
     )
-    async def callback_probe() -> dict[str, bool | str | int]:
-        app.state.successful_calls += 1
-        return {
-            "status": "ok",
-            "identity_verified": True,
-            "secret_verified": True,
-            "invocation_count": app.state.successful_calls,
-        }
+
+    @server.tool(name="get_service_status", annotations=annotation)
+    async def get_service_status() -> dict[str, str]:
+        """Return synthetic process liveness, not Azure resource health."""
+        app.state.tool_calls["get_service_status"] += 1
+        return {"service": config.app_name, "status": "healthy"}
+
+    @server.tool(name="get_deployment_context", annotations=annotation)
+    async def get_deployment_context() -> dict[str, str]:
+        """Return explicitly configured nonsecret Builder deployment labels."""
+        app.state.tool_calls["get_deployment_context"] += 1
+        return {"app": config.app_name, "region": config.region, "environment": "DEV/TEST"}
 
     app.mount("/", transport)
     return app

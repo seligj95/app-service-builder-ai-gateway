@@ -1,5 +1,5 @@
 components:
-  - name: callback
+  - name: agent
     role: web
     platform: python
     platformVersion: "3.14"
